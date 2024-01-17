@@ -27,7 +27,7 @@ from src.data_manager import (
     init_data,
 )
 import utils
-from datasets import ImageNet, ImageNet_semi, get_dataset
+from datasets import ImageNet
 from torch.utils.data import DataLoader
 from libs.autoencoder import get_model
 
@@ -120,7 +120,7 @@ def get_aug_features(config):
 
     cluster_name = config.model_name + '-' + '-'.join(config.subset_path.split('/')).split('.txt')[0]
 
-    aug_root_path = f'{config.dpm_path}/{cluster_name}/samples_for_classifier/'
+    aug_root_path = f'{config.dpm_path}/{cluster_name}/{config.resolution}/samples_for_classifier/'
     aug_image_folder = f'aug_{config.augmentation_K}_samples/'
 
     # -- Function to make train/test dataloader
@@ -167,7 +167,7 @@ def get_aug_features(config):
         data_loader=data_loader,
         encoder=encoder)
 
-    features_path = os.path.join('pretrained/features', f'{cluster_name}')
+    features_path = os.path.join('pretrained/features', f'{cluster_name}', config.resolution)
     os.makedirs(name=features_path, exist_ok=True)
 
     if accelerator.is_main_process:
@@ -238,7 +238,7 @@ def train_classifier_stage3(config):
     subset_tag = '-'.join(config.subset_path.split('/')).split('.txt')[0] + '-accelerate' if config.subset_path is not None else 'imagenet_subses1-100percent'
     cluster_name = config.model_name + '-' + '-'.join(config.subset_path.split('/')).split('.txt')[0]
 
-    features_path = os.path.join('pretrained/features', f'{cluster_name}')
+    features_path = os.path.join('pretrained/features', f'{cluster_name}', config.resolution)
     os.makedirs(name=features_path, exist_ok=True)
     
 
@@ -311,8 +311,10 @@ def train_classifier_stage3(config):
 def train_classifier_stage1(config):
     torch.backends.cudnn.benchmark = True
     mp.set_start_method('spawn')
+
     accelerator = accelerate.Accelerator()
     device = accelerator.device
+
     accelerate.utils.set_seed(config.seed, device_specific=True)
     logging.info(f'Process {accelerator.process_index} using device: {device}')
 

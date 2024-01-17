@@ -227,7 +227,8 @@ FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file(
     "config", None, "Training configuration.", lock_config=False)
 flags.mark_flags_as_required(["config"])
-
+flags.DEFINE_string("workdir", None, "Work unit directory.")
+flags.DEFINE_string("dataset_path", None, "dataset directory.")
 
 def get_config_name():
     argv = sys.argv
@@ -259,12 +260,12 @@ def main(argv):
     config.hparams = get_hparams()
     cluster_name = config.model_name + '-' + '-'.join(config.subset_path.split('/')).split('.txt')[0]
 
-    config.workdir = os.path.join(config.dpm_path, cluster_name)
+    config.workdir = FLAGS.workdir or os.path.join(config.dpm_path, cluster_name, str(config.resolution))
 
     config.ckpt_root = os.path.join(config.workdir, 'ckpts')
     config.sample_dir = os.path.join(config.workdir, 'samples')
     
-    config.dataset.path = f'pretrained/datasets/{cluster_name}/imagenet{config.resolution}_features'
+    config.dataset.path = FLAGS.dataset_path or f'pretrained/datasets/{cluster_name}/imagenet{config.resolution}_features'
     train(config)
 
 

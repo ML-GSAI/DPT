@@ -13,15 +13,16 @@ def get_config():
     config.penalty = 'l2'
     config.mask = 0.0
     config.preload = True
-    config.fname = 'vitb4_300ep.pth.tar'
-    config.model_name = 'deit_base_p4'
+    config.fname = 'vitl7_200ep.pth.tar'
+    config.model_name = 'deit_large_p7'
     config.pretrained = 'pretrained/'
 
     config.normalize = True
     config.root_path = '/cache/datasets/ILSVRC/Data/'
     config.image_folder = 'CLS-LOC/'
     config.image_path = '/cache/datasets/ILSVRC/Data/CLS-LOC'
-    config.subset_path = 'imagenet_subsets3/2imgs_class.txt'
+    
+    config.subset_path = 'imagenet_subsets2/1imgs_class.txt'
     config.blocks = 1
 
     config.seed = 1234
@@ -55,7 +56,6 @@ def get_config():
         lr=0.0002,
         weight_decay=0.03,
         betas=(0.99, 0.99),
-        amsgrad=False
     )
 
     config.lr_scheduler = d(
@@ -73,15 +73,8 @@ def get_config():
         num_heads=16,
         mlp_ratio=4,
         qkv_bias=False,
-        pos_drop_rate=0.,
-        drop_rate=0.,
-        attn_drop_rate=0.,
-        drop_path_rate=0.,
         mlp_time_embed=False,
         num_classes=1001,
-        final_layer='conv',
-        skip='concat',
-        token_conv='none',
         use_checkpoint=True
     )
 

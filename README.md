@@ -9,6 +9,8 @@ We propose a three-stage training strategy called dual pseudo training (DPT) for
 ## Dependency
 
 ```sh
+conda create -n dpt python==3.9
+conda activate dpt
 pip3 install torch torchvision torchaudio
 pip install Cyanure accelerate ml_collections einops datasets tensorboard timm==0.3.2 absl-py ml_collections wandb ftfy==6.1.1 transformers==4.23.1 setuptools==58.0.4
 ```
@@ -34,60 +36,111 @@ Put the downloaded file in this codebase.
 Download `fid_stats` directory from this [link](https://drive.google.com/drive/folders/1yo-XhqbPue3rp5P57j6QbA5QZx6KybvP?usp=sharing) (which contains reference statistics for FID).
 Put the downloaded directory as `assets/fid_stats` in this codebase.
 
-## Training
+## Training uvit-large
 We use the [huggingface accelerate](https://github.com/huggingface/accelerate) library to help train with distributed data parallel and mixed precision. The following is the training command:
 #### For single node with ViT-B/4 subsets1/2img K=128
 ```sh
 # We provide all commands to reproduce DPT training in the paper:
+# remenber to change the path of ImageNet in config file
 ## you can change the configs in the configs files to train other models. For our DPT, you can change subset_path, model_name, fname, augmentation_K to choose your model. We only list four files.
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --config.output_path=log/stage1_log --func=train_classifier_stage1
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --config.output_path=log/stage1_log --func=train_classifier_stage1
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=get_all_features
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=get_all_features
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=get_cluster
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=get_cluster
 
-python extract_imagenet_features_semi.py --config=configs/accelerate_b4_subset1_2img_k_128.py
+python extract_imagenet_features_semi.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_ldm.py --config=configs/accelerate_b4_subset1_2img_k_128.py 
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_ldm.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py 
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 sample_ldm_all.py --config=configs/accelerate_b4_subset1_2img_k_128.py --output_path=log/sample_log
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 sample_ldm_all.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --output_path=log/sample_log
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=get_aug_features
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=get_aug_features
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=train_classifier_stage3 --config.output_path=log/stage3_log
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=train_classifier_stage3 --config.output_path=log/stage3_log
 ```
 #### For multi node with ViT-B/4 subsets1/2img K=128
 ```sh
 ## change the accelerate main_process_ip main_process_port, num_machines, machine_rank, num_processes to your own settings.
 ### Step 1 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --config.output_path=log/stage1_log --func=train_classifier_stage1
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --config.output_path=log/stage1_log --func=train_classifier_stage1
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=get_all_features
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=get_all_features
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=get_cluster
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=get_cluster
 
 if machine_rank == 0:
-  python extract_imagenet_features_semi.py --config=configs/accelerate_b4_subset1_2img_k_128.py
+  python extract_imagenet_features_semi.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py
 
 ### Step2
 #### copy assets pretrained folders to each node and run the following command. Because the features datasets only produced in the first node
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_ldm.py --config=configs/accelerate_b4_subset1_2img_k_128.py 
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_ldm.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py 
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 sample_ldm_all.py --config=configs/accelerate_b4_subset1_2img_k_128.py --output_path=log/sample_log
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 sample_ldm_all.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --output_path=log/sample_log
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=get_aug_features
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=get_aug_features
 
-accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128.py --func=train_classifier_stage3 --config.output_path=log/stage3_log
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_large.py --func=train_classifier_stage3 --config.output_path=log/stage3_log
+```
+
+## Training uvit-huge
+We use the [huggingface accelerate](https://github.com/huggingface/accelerate) library to help train with distributed data parallel and mixed precision. The following is the training command:
+#### For single node with ViT-B/4 subsets1/2img K=128
+```sh
+# We provide all commands to reproduce DPT training in the paper:
+# remenber to change the path of ImageNet in config file
+## you can change the configs in the configs files to train other models. For our DPT, you can change subset_path, model_name, fname, augmentation_K to choose your model. We only list four files.
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --config.output_path=log/stage1_log --func=train_classifier_stage1
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=get_all_features
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=get_cluster
+
+python extract_imagenet_features_semi.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_ldm_discrete.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py 
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 sample_ldm_discrete_all.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --output_path=log/sample_log
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=get_aug_features
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 1 --machine_rank 0 --num_processes 4 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=train_classifier_stage3 --config.output_path=log/stage3_log
+```
+#### For multi node with ViT-B/4 subsets1/2img K=128
+```sh
+## change the accelerate main_process_ip main_process_port, num_machines, machine_rank, num_processes to your own settings.
+### Step 1 
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --config.output_path=log/stage1_log --func=train_classifier_stage1
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=get_all_features
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=get_cluster
+
+if machine_rank == 0:
+  python extract_imagenet_features_semi.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py
+
+### Step2
+#### copy assets pretrained folders to each node and run the following command. Because the features datasets only produced in the first node
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_ldm_discrete.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py 
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 sample_ldm_discrete_all.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --output_path=log/sample_log
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=get_aug_features
+
+accelerate launch --multi_gpu --main_process_ip localhost --main_process_port 1234 --num_machines 4 --machine_rank 0 --num_processes 32 --mixed_precision fp16 train_classifier.py --config=configs/accelerate_b4_subset1_2img_k_128_huge.py --func=train_classifier_stage3 --config.output_path=log/stage3_log
 ```
 
 ## References
 If you find the code useful for your research, please consider citing
-```bib
-@article{you2023diffusion,
-  title={Diffusion Models and Semi-Supervised Learners Benefit Mutually with Few Labels},
-  author={You, Zebin and Zhong, Yong and Bao, Fan and Sun, Jiacheng and Li, Chongxuan and Zhu, Jun},
-  journal={arXiv preprint arXiv:2302.10586},
-  year={2023}
+#
+If you have any question about code or our paper, welcome to send email to me: zebin@ruc.edu.cn.
+#
+``` bib
+@inproceedings{you2023diffusion,
+  author    = {You, Zebin and Zhong, Yong and Bao, Fan and Sun, Jiacheng and Li, Chongxuan and Zhu, Jun},
+  title     = {Diffusion models and semi-supervised learners benefit mutually with few labels},
+  booktitle = {Proc. NeurIPS},
+  year      = {2023}
 }
 ```
 

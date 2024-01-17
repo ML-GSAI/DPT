@@ -48,27 +48,9 @@ class CFGDataset(Dataset):  # for classifier free guidance
         return len(self.dataset)
 
     def __getitem__(self, item):
-        x, label = self.dataset[item]
-        y = 0
-        if type(label) == np.ndarray: # If need to keep the label
-            if label[1] == 1: # if label[1] == 1, this is a true label or high confidence prediction, Keep labels
-                y = label[0]
-            elif label[1] != 0: # for exp6
-                if random.random() < self.p_uncond * (1-label[1]):
-                    y = self.empty_token
-                else:
-                    y = label[0]
-            elif random.random() < self.p_uncond: # set label none with probability p_uncond
-                y = self.empty_token
-            else: # keep the label if not set to none
-                y = label[0]
-
-        else: # if label is not a numpy array, then we don't need to keep labels
-            if random.random() < self.p_uncond:
-                y = self.empty_token
-            else:
-                y = label
-
+        x, y = self.dataset[item]
+        if random.random() < self.p_uncond:
+            y = self.empty_token
         return x, np.int64(y)
 
 
@@ -194,6 +176,29 @@ class FeatureDataset(Dataset):
         z, label = np.load(path, allow_pickle=True)
         return z, label
 
+class ImageNet128Features(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder
+    def __init__(self, path, cfg=False, p_uncond=None):
+        super().__init__()
+        print('Prepare dataset...')
+        self.train = FeatureDataset(path)
+        print('Prepare dataset ok')
+        self.K = 1000
+
+        if cfg:  # classifier free guidance
+            assert p_uncond is not None
+            print(f'prepare the dataset for classifier free guidance with p_uncond={p_uncond}')
+            self.train = CFGDataset(self.train, p_uncond, self.K)
+
+    @property
+    def data_shape(self):
+        return 4, 16, 16
+
+    @property
+    def fid_stat(self):
+        return f'assets/fid_stats/fid_stats_imagenet128_guided_diffusion.npz'
+
+    def sample_label(self, n_samples, device):
+        return torch.randint(0, 1000, (n_samples,), device=device)
 
 class ImageNet256Features(DatasetFactory):  # the moments calculated by Stable Diffusion image encoder
     def __init__(self, path, cfg=False, p_uncond=None):
@@ -294,17 +299,6 @@ class ImageNet(DatasetFactory):
     def label_prob(self, k):
         return self.frac[k]
 
-class ImageNet_semi(ImageNet):
-    def __init__(self, path, resolution, random_crop=False, random_flip=True, cluster_path=None, fnames_path=None, is_true_labels_path=None):
-        super().__init__(path, resolution, random_crop, random_flip, cluster_path, fnames_path)
-        assert is_true_labels_path is not None
-        print(f'concat label with is_true_label from {is_true_labels_path}')
-        _fnames = torch.load(fnames_path)
-        _is_true_labels = torch.load(is_true_labels_path)
-        fnames_is_true_labels = dict(zip(_fnames, _is_true_labels))
-        isTruelabels = [fnames_is_true_labels[os.path.split(fname)[-1]] for fname in self.train.image_paths]
-        self.train.labels = [(label, isTruelabel) for label, isTruelabel in zip(self.train.labels, isTruelabels)]
-
 
 def _list_image_files_recursively(data_dir):
     results = []
@@ -353,7 +347,7 @@ class ImageDataset(Dataset):
 
         arr = arr.astype(np.float32) / 127.5 - 1
 
-        label = np.array(self.labels[idx], dtype=np.float64)
+        label = np.array(self.labels[idx], dtype=np.int64)
         return np.transpose(arr, [2, 0, 1]), label
 
 
@@ -849,6 +843,8 @@ def get_dataset(name, **kwargs):
         return CIFAR10(**kwargs)
     elif name == 'imagenet':
         return ImageNet(**kwargs)
+    elif name == 'imagenet128_features':
+        return ImageNet128Features(**kwargs)
     elif name == 'imagenet256_features':
         return ImageNet256Features(**kwargs)
     elif name == 'imagenet512_features':

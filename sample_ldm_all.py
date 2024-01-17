@@ -45,7 +45,7 @@ def evaluate(config):
     nnet = accelerator.prepare(nnet)
     cluster_name = config.model_name + '-' + '-'.join(config.subset_path.split('/')).split('.txt')[0]
 
-    nnet_path = f'{config.dpm_path}/{cluster_name}/ckpts/300000.ckpt/nnet_ema.pth'
+    nnet_path = f'{config.dpm_path}/{cluster_name}/{config.resolution}/ckpts/{config.train.n_steps}.ckpt/nnet_ema.pth'
     logging.info(f'load nnet from {nnet_path}')
     accelerator.unwrap_model(nnet).load_state_dict(torch.load(nnet_path, map_location='cpu'))
     nnet.eval()
@@ -143,7 +143,7 @@ def evaluate(config):
     print(dict2)
 
     for i in range(1000):
-        aug_samples_path = f'{config.dpm_path}/{cluster_name}/samples_for_classifier/aug_{config.augmentation_K}_samples'
+        aug_samples_path = f'{config.dpm_path}/{cluster_name}/{config.resolution}/samples_for_classifier/aug_{config.augmentation_K}_samples'
 
         path = os.path.join(aug_samples_path, f'train/{dict2[i]}')
         if accelerator.is_main_process:

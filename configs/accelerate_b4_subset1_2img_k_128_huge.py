@@ -21,7 +21,7 @@ def get_config():
     config.root_path = '/cache/datasets/ILSVRC/Data/'
     config.image_folder = 'CLS-LOC/'
     config.image_path = '/cache/datasets/ILSVRC/Data/CLS-LOC'
-
+    
     config.subset_path = 'imagenet_subsets1/2imgs_class.txt'
     config.blocks = 1
 
@@ -32,7 +32,7 @@ def get_config():
     config.resolution = 256
 
     config.autoencoder = d(
-        pretrained_path='assets/stable-diffusion/autoencoder_kl.pth'
+        pretrained_path='assets/stable-diffusion/autoencoder_kl_ema.pth'
     )
 
     config.dpm_path = 'assets/DPM'
@@ -43,7 +43,7 @@ def get_config():
     config.output_path = ''
 
     config.train = d(
-        n_steps=300000,
+        n_steps=500000,
         batch_size=1024,
         mode='cond',
         log_interval=10,
@@ -56,7 +56,6 @@ def get_config():
         lr=0.0002,
         weight_decay=0.03,
         betas=(0.99, 0.99),
-        amsgrad=False
     )
 
     config.lr_scheduler = d(
@@ -69,28 +68,22 @@ def get_config():
         img_size=32,
         patch_size=2,
         in_chans=4,
-        embed_dim=1024,
-        depth=20,
+        embed_dim=1152,
+        depth=28,
         num_heads=16,
         mlp_ratio=4,
         qkv_bias=False,
-        pos_drop_rate=0.,
-        drop_rate=0.,
-        attn_drop_rate=0.,
-        drop_path_rate=0.,
         mlp_time_embed=False,
         num_classes=1001,
-        final_layer='conv',
-        skip='concat',
-        token_conv='none',
-        use_checkpoint=True
+        use_checkpoint=True,
+        conv=False
     )
 
     config.dataset = d(
         name='imagenet256_features',
         path='',
         cfg=True,
-        p_uncond=0.15
+        p_uncond=0.1
     )
 
     config.sample = d(

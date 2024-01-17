@@ -1,4 +1,3 @@
-import sde
 import ml_collections
 import torch
 from torch import multiprocessing as mp
@@ -10,13 +9,86 @@ from torch.utils._pytree import tree_map
 import accelerate
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
-from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
+from dpm_solver_pp import NoiseScheduleVP, DPM_Solver
 import tempfile
 from tools.fid_score import calculate_fid_given_paths
 from absl import logging
 import builtins
 import os
-import wandb
+#import wandb
+import libs.autoencoder
+import numpy as np
+
+
+def stable_diffusion_beta_schedule(linear_start=0.00085, linear_end=0.0120, n_timestep=1000):
+    _betas = (
+        torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
+    )
+    return _betas.numpy()
+
+
+def get_skip(alphas, betas):
+    N = len(betas) - 1
+    skip_alphas = np.ones([N + 1, N + 1], dtype=betas.dtype)
+    for s in range(N + 1):
+        skip_alphas[s, s + 1:] = alphas[s + 1:].cumprod()
+    skip_betas = np.zeros([N + 1, N + 1], dtype=betas.dtype)
+    for t in range(N + 1):
+        prod = betas[1: t + 1] * skip_alphas[1: t + 1, t]
+        skip_betas[:t, t] = (prod[::-1].cumsum())[::-1]
+    return skip_alphas, skip_betas
+
+
+def stp(s, ts: torch.Tensor):  # scalar tensor product
+    if isinstance(s, np.ndarray):
+        s = torch.from_numpy(s).type_as(ts)
+    extra_dims = (1,) * (ts.dim() - 1)
+    return s.view(-1, *extra_dims) * ts
+
+
+def mos(a, start_dim=1):  # mean of square
+    return a.pow(2).flatten(start_dim=start_dim).mean(dim=-1)
+
+
+class Schedule(object):  # discrete time
+    def __init__(self, _betas):
+        r""" _betas[0...999] = betas[1...1000]
+             for n>=1, betas[n] is the variance of q(xn|xn-1)
+             for n=0,  betas[0]=0
+        """
+
+        self._betas = _betas
+        self.betas = np.append(0., _betas)
+        self.alphas = 1. - self.betas
+        self.N = len(_betas)
+
+        assert isinstance(self.betas, np.ndarray) and self.betas[0] == 0
+        assert isinstance(self.alphas, np.ndarray) and self.alphas[0] == 1
+        assert len(self.betas) == len(self.alphas)
+
+        # skip_alphas[s, t] = alphas[s + 1: t + 1].prod()
+        self.skip_alphas, self.skip_betas = get_skip(self.alphas, self.betas)
+        self.cum_alphas = self.skip_alphas[0]  # cum_alphas = alphas.cumprod()
+        self.cum_betas = self.skip_betas[0]
+        self.snr = self.cum_alphas / self.cum_betas
+
+    def tilde_beta(self, s, t):
+        return self.skip_betas[s, t] * self.cum_betas[s] / self.cum_betas[t]
+
+    def sample(self, x0):  # sample from q(xn|x0), where n is uniform
+        n = np.random.choice(list(range(1, self.N + 1)), (len(x0),))
+        eps = torch.randn_like(x0)
+        xn = stp(self.cum_alphas[n] ** 0.5, x0) + stp(self.cum_betas[n] ** 0.5, eps)
+        return torch.tensor(n, device=x0.device), eps, xn
+
+    def __repr__(self):
+        return f'Schedule({self.betas[:10]}..., {self.N})'
+
+
+def LSimple(x0, nnet, schedule, **kwargs):
+    n, eps, xn = schedule.sample(x0)  # n in {1, ..., 1000}
+    eps_pred = nnet(xn, n, **kwargs)
+    return mos(eps - eps_pred)
 
 
 def train(config):
@@ -41,13 +113,14 @@ def train(config):
         os.makedirs(config.sample_dir, exist_ok=True)
     accelerator.wait_for_everyone()
     if accelerator.is_main_process:
-        wandb.init(dir=os.path.abspath(config.workdir), project=f'uvit_{config.dataset.name}', config=config.to_dict(),
-                   name=config.hparams, job_type='train', mode='offline')
+        #wandb.init(dir=os.path.abspath(config.workdir), project=f'uvit_{config.dataset.name}', config=config.to_dict(),
+                   #name=config.hparams, job_type='train', mode='offline')
         utils.set_logger(log_level='info', fname=os.path.join(config.workdir, 'output.log'))
         logging.info(config)
     else:
         utils.set_logger(log_level='error')
         builtins.print = lambda *args: None
+    logging.info(f'Run on {accelerator.num_processes} devices')
 
     dataset = get_dataset(**config.dataset)
     assert os.path.exists(dataset.fid_stat)
@@ -61,6 +134,29 @@ def train(config):
     lr_scheduler = train_state.lr_scheduler
     train_state.resume(config.ckpt_root)
 
+    autoencoder = libs.autoencoder.get_model(config.autoencoder.pretrained_path)
+    autoencoder.to(device)
+
+    @ torch.cuda.amp.autocast()
+    def encode(_batch):
+        return autoencoder.encode(_batch)
+
+    @ torch.cuda.amp.autocast()
+    def decode(_batch):
+        return autoencoder.decode(_batch)
+    
+    def decode_large_batch(_batch):
+        decode_mini_batch_size = 5  # use a small batch size since the decoder is large
+        xs = []
+        pt = 0
+        for _decode_mini_batch_size in utils.amortize(_batch.size(0), decode_mini_batch_size):
+            x = decode(_batch[pt: pt + _decode_mini_batch_size])
+            pt += _decode_mini_batch_size
+            xs.append(x)
+        xs = torch.concat(xs, dim=0)
+        assert xs.size(0) == _batch.size(0)
+        return xs
+
     def get_data_generator():
         while True:
             for data in tqdm(train_dataset_loader, disable=not accelerator.is_main_process, desc='epoch'):
@@ -68,67 +164,56 @@ def train(config):
 
     data_generator = get_data_generator()
 
-
-    # set the score_model to train
-    score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
-    score_model_ema = sde.ScoreModel(nnet_ema, pred=config.pred, sde=sde.VPSDE())
+    _betas = stable_diffusion_beta_schedule()
+    _schedule = Schedule(_betas)
+    logging.info(f'use {_schedule}')
 
 
     def train_step(_batch):
         _metrics = dict()
         optimizer.zero_grad()
         if config.train.mode == 'uncond':
-            loss = sde.LSimple(score_model, _batch, pred=config.pred)
+            _z = autoencoder.sample(_batch) if 'feature' in config.dataset.name else encode(_batch)
+            loss = LSimple(_z, nnet, _schedule)
         elif config.train.mode == 'cond':
-            loss = sde.LSimple(score_model, _batch[0], pred=config.pred, y=_batch[1])
+            _z = autoencoder.sample(_batch[0]) if 'feature' in config.dataset.name else encode(_batch[0])
+            loss = LSimple(_z, nnet, _schedule, y=_batch[1])
         else:
             raise NotImplementedError(config.train.mode)
         _metrics['loss'] = accelerator.gather(loss.detach()).mean()
         accelerator.backward(loss.mean())
-        if 'grad_clip' in config and config.grad_clip > 0:
-            accelerator.clip_grad_norm_(nnet.parameters(), max_norm=config.grad_clip)
         optimizer.step()
         lr_scheduler.step()
         train_state.ema_update(config.get('ema_rate', 0.9999))
         train_state.step += 1
         return dict(lr=train_state.optimizer.param_groups[0]['lr'], **_metrics)
 
+    def dpm_solver_sample(_n_samples, _sample_steps, **kwargs):
+        _z_init = torch.randn(_n_samples, *config.z_shape, device=device)
+        noise_schedule = NoiseScheduleVP(schedule='discrete', betas=torch.tensor(_betas, device=device).float())
 
-    def eval_step(n_samples, sample_steps, algorithm):
-        logging.info(f'eval_step: n_samples={n_samples}, sample_steps={sample_steps}, algorithm={algorithm}, '
+        def model_fn(x, t_continuous):
+            t = t_continuous * _schedule.N
+            eps_pre = nnet_ema(x, t, **kwargs)
+            return eps_pre
+
+        dpm_solver = DPM_Solver(model_fn, noise_schedule, predict_x0=True, thresholding=False)
+        _z = dpm_solver.sample(_z_init, steps=_sample_steps, eps=1. / _schedule.N, T=1.)
+        return decode_large_batch(_z)
+
+    def eval_step(n_samples, sample_steps):
+        logging.info(f'eval_step: n_samples={n_samples}, sample_steps={sample_steps}'
                      f'mini_batch_size={config.sample.mini_batch_size}')
 
         def sample_fn(_n_samples):
-            _x_init = torch.randn(_n_samples, *dataset.data_shape, device=device)
             if config.train.mode == 'uncond':
                 kwargs = dict()
             elif config.train.mode == 'cond':
                 kwargs = dict(y=dataset.sample_label(_n_samples, device=device))
             else:
                 raise NotImplementedError
+            return dpm_solver_sample(_n_samples, sample_steps, **kwargs)
 
-            if algorithm == 'euler_maruyama_sde':
-                return sde.euler_maruyama(sde.ReverseSDE(score_model_ema), _x_init, sample_steps, **kwargs)
-            elif algorithm == 'euler_maruyama_ode':
-                return sde.euler_maruyama(sde.ODE(score_model_ema), _x_init, sample_steps, **kwargs)
-            elif algorithm == 'dpm_solver':
-                noise_schedule = NoiseScheduleVP(schedule='linear')
-                model_fn = model_wrapper(
-                    score_model_ema.noise_pred,
-                    noise_schedule,
-                    time_input_type='0',
-                    model_kwargs=kwargs
-                )
-                dpm_solver = DPM_Solver(model_fn, noise_schedule)
-                return dpm_solver.sample(
-                    _x_init,
-                    steps=sample_steps,
-                    eps=1e-4,
-                    adaptive_step_size=False,
-                    fast_version=True,
-                )
-            else:
-                raise NotImplementedError
 
         with tempfile.TemporaryDirectory() as temp_path:
             path = config.sample.path or temp_path
@@ -142,7 +227,7 @@ def train(config):
                 logging.info(f'step={train_state.step} fid{n_samples}={_fid}')
                 with open(os.path.join(config.workdir, 'eval.log'), 'a') as f:
                     print(f'step={train_state.step} fid{n_samples}={_fid}', file=f)
-                wandb.log({f'fid{n_samples}': _fid}, step=train_state.step)
+                #wandb.log({f'fid{n_samples}': _fid}, step=train_state.step)
             _fid = torch.tensor(_fid, device=device)
             _fid = accelerator.reduce(_fid, reduction='sum')
 
@@ -160,30 +245,31 @@ def train(config):
         if accelerator.is_main_process and train_state.step % config.train.log_interval == 0:
             logging.info(utils.dct2str(dict(step=train_state.step, **metrics)))
             logging.info(config.workdir)
-            wandb.log(metrics, step=train_state.step)
+            #wandb.log(metrics, step=train_state.step)
 
         if accelerator.is_main_process and train_state.step % config.train.eval_interval == 0:
+            torch.cuda.empty_cache()
             logging.info('Save a grid of images...')
-            x_init = torch.randn(100, *dataset.data_shape, device=device)
             if config.train.mode == 'uncond':
-                samples = sde.euler_maruyama(sde.ODE(score_model_ema), x_init=x_init, sample_steps=50)
+                samples = dpm_solver_sample(_n_samples=5 * 10, _sample_steps=50)
             elif config.train.mode == 'cond':
-                y = einops.repeat(torch.arange(10, device=device) % dataset.K, 'nrow -> (nrow ncol)', ncol=10)
-                samples = sde.euler_maruyama(sde.ODE(score_model_ema), x_init=x_init, sample_steps=50, y=y)
+                y = einops.repeat(torch.arange(5, device=device) % dataset.K, 'nrow -> (nrow ncol)', ncol=10)
+                samples = dpm_solver_sample(_n_samples=5 * 10, _sample_steps=50, y=y)
             else:
                 raise NotImplementedError
             samples = make_grid(dataset.unpreprocess(samples), 10)
             save_image(samples, os.path.join(config.sample_dir, f'{train_state.step}.png'))
-            wandb.log({'samples': wandb.Image(samples)}, step=train_state.step)
+            #wandb.log({'samples': wandb.Image(samples)}, step=train_state.step)
             torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
 
         if train_state.step % config.train.save_interval == 0 or train_state.step == config.train.n_steps:
+            torch.cuda.empty_cache()
             logging.info(f'Save and eval checkpoint {train_state.step}...')
             if accelerator.local_process_index == 0:
                 train_state.save(os.path.join(config.ckpt_root, f'{train_state.step}.ckpt'))
             accelerator.wait_for_everyone()
-            fid = eval_step(n_samples=10000, sample_steps=50, algorithm='dpm_solver')  # calculate fid of the saved checkpoint
+            fid = eval_step(n_samples=10000, sample_steps=50)  # calculate fid of the saved checkpoint
             step_fid.append((train_state.step, fid))
             torch.cuda.empty_cache()
         accelerator.wait_for_everyone()
@@ -195,7 +281,7 @@ def train(config):
     train_state.load(os.path.join(config.ckpt_root, f'{step_best}.ckpt'))
     del metrics
     accelerator.wait_for_everyone()
-    eval_step(n_samples=config.sample.n_samples, sample_steps=config.sample.sample_steps, algorithm=config.sample.algorithm)
+    eval_step(n_samples=config.sample.n_samples, sample_steps=config.sample.sample_steps)
 
 
 
@@ -211,6 +297,7 @@ config_flags.DEFINE_config_file(
     "config", None, "Training configuration.", lock_config=False)
 flags.mark_flags_as_required(["config"])
 flags.DEFINE_string("workdir", None, "Work unit directory.")
+flags.DEFINE_string("dataset_path", None, "dataset directory.")
 
 
 def get_config_name():
@@ -241,9 +328,14 @@ def main(argv):
     config = FLAGS.config
     config.config_name = get_config_name()
     config.hparams = get_hparams()
-    config.workdir = FLAGS.workdir or os.path.join('workdir', config.config_name, config.hparams)
+    cluster_name = config.model_name + '-' + '-'.join(config.subset_path.split('/')).split('.txt')[0]
+
+    config.workdir = FLAGS.workdir or os.path.join(config.dpm_path, cluster_name, str(config.resolution))
+
     config.ckpt_root = os.path.join(config.workdir, 'ckpts')
     config.sample_dir = os.path.join(config.workdir, 'samples')
+    
+    config.dataset.path = FLAGS.dataset_path or f'pretrained/datasets/{cluster_name}/imagenet{config.resolution}_features'
     train(config)
 
 

@@ -24,23 +24,11 @@ def dct2str(dct):
 
 
 def get_nnet(name, **kwargs):
-    if name == 'iddpm':
-        from libs.iddpm.unet import UNetModel
-        return UNetModel(**kwargs)
-    elif name == 'adm':
-        from libs.guided_diffusion.unet import UNetModel
-        return UNetModel(**kwargs)
-    elif name == 'uvit':
+    if name == 'uvit':
         from libs.uvit import UViT
         return UViT(**kwargs)
     elif name == 'uvit_t2i':
         from libs.uvit_t2i import UViT
-        return UViT(**kwargs)
-    elif name == 'uvit_i2t':
-        from libs.uvit_i2t import UViT
-        return UViT(**kwargs)
-    elif name == 'uvit_t':
-        from libs.uvit_t import UViT
         return UViT(**kwargs)
     else:
         raise NotImplementedError(name)

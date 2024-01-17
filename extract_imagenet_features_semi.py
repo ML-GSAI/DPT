@@ -2,7 +2,7 @@ import torch.nn as nn
 import numpy as np
 import torch
 import os
-from datasets import ImageNet, ImageNet_semi, get_dataset
+from datasets import ImageNet
 from torch.utils.data import DataLoader
 from libs.autoencoder import get_model
 import argparse
@@ -63,7 +63,7 @@ def main(argv):
 
     train_dataset = dataset.get_split(split='train', labeled=True)
 
-    train_batch_size = 256
+    train_batch_size = 128
     if config.resolution == 512:
         train_batch_size = 64
 

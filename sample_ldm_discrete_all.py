@@ -5,17 +5,26 @@ from torch import multiprocessing as mp
 import accelerate
 import utils
 import sde
+import einops
 from datasets import get_dataset
 import tempfile
-from dpm_solver_pytorch import NoiseScheduleVP, model_wrapper, DPM_Solver
+from dpm_solver_pp import NoiseScheduleVP, DPM_Solver
 from absl import logging
 import builtins
 import libs.autoencoder
+import torch.nn as nn
+import numpy as np
+import os
 from tqdm import tqdm
 from torchvision.utils import make_grid, save_image
-import numpy as np
+from absl import logging
+import pickle
 
-
+def stable_diffusion_beta_schedule(linear_start=0.00085, linear_end=0.0120, n_timestep=1000):
+    _betas = (
+        torch.linspace(linear_start ** 0.5, linear_end ** 0.5, n_timestep, dtype=torch.float64) ** 2
+    )
+    return _betas.numpy()
 
 def evaluate(config):
     if config.get('benchmark', False):
@@ -40,8 +49,17 @@ def evaluate(config):
 
     nnet = utils.get_nnet(**config.nnet)
     nnet = accelerator.prepare(nnet)
-    logging.info(f'load nnet from {config.nnet_path}')
-    accelerator.unwrap_model(nnet).load_state_dict(torch.load(config.nnet_path, map_location='cpu'))
+    if config.nnet_path == '':
+        cluster_name = config.model_name + '-' + '-'.join(config.subset_path.split('/')).split('.txt')[0]
+
+        nnet_path = f'{config.dpm_path}/{cluster_name}/{config.resolution}/ckpts/{config.train.n_steps}.ckpt/nnet_ema.pth'
+        
+    else:
+        nnet_path = config.nnet_path
+    
+    logging.info(f'load nnet from {nnet_path}')
+
+    accelerator.unwrap_model(nnet).load_state_dict(torch.load(nnet_path, map_location='cpu'))
     nnet.eval()
 
     autoencoder = libs.autoencoder.get_model(config.autoencoder.pretrained_path)
@@ -73,83 +91,84 @@ def evaluate(config):
             _cond = nnet(x, timesteps, y=y)
             _uncond = nnet(x, timesteps, y=torch.tensor([dataset.K] * x.size(0), device=device))
             return _cond + config.sample.scale * (_cond - _uncond)
-        score_model = sde.ScoreModel(cfg_nnet, pred=config.pred, sde=sde.VPSDE())
     else:
-        score_model = sde.ScoreModel(nnet, pred=config.pred, sde=sde.VPSDE())
+        def cfg_nnet(x, timesteps, y):
+            _cond = nnet(x, timesteps, y=y)
+            return _cond
 
     logging.info(config.sample)
     assert os.path.exists(dataset.fid_stat)
-    logging.info(f'sample: n_samples={config.sample.n_samples}, mode={config.train.mode}, mixed_precision={config.mixed_precision}')
+    logging.info(f'sample: each class sample n_samples={config.augmentation_K}, mode={config.train.mode}, mixed_precision={config.mixed_precision}')
+
+    _betas = stable_diffusion_beta_schedule()
+    N = len(_betas)
 
     def amortize(n_samples, batch_size):
         k = n_samples // batch_size
         r = n_samples % batch_size
         return k * [batch_size] if r == 0 else k * [batch_size] + [r]
 
-    def sample2dir(accelerator, path, n_samples, mini_batch_size, sample_fn, unpreprocess_fn=None):
+    def sample2dir(accelerator, path, n_samples, mini_batch_size, sample_fn, unpreprocess_fn=None, class_num=0):
         os.makedirs(path, exist_ok=True)
         idx = 0
         batch_size = mini_batch_size * accelerator.num_processes
 
         for _batch_size in tqdm(amortize(n_samples, batch_size), disable=not accelerator.is_main_process, desc='sample2dir'):
-            arr = sample_fn(mini_batch_size)
-            samples = unpreprocess_fn(arr[0])
-            classes = arr[1]
+            samples = unpreprocess_fn(sample_fn(mini_batch_size, class_num))
             samples = accelerator.gather(samples.contiguous())[:_batch_size]
-            classes = accelerator.gather(classes.contiguous())[:_batch_size]
-            if accelerator.is_main_process:
-                for sample, a_class in zip(samples, classes):
-                    grid = make_grid(sample)
-                    ndarr = grid.mul(255).add_(0.5).clamp_(0, 255).permute(1, 2, 0).to('cpu', torch.uint8).numpy()
-                    label_arr = a_class.to('cpu', torch.uint8).numpy()
-                    np.savez(os.path.join(path, f"{idx}.npz"), ndarr, label_arr)
+            if accelerator.local_process_index == 0:
+                for sample in samples:
+                    save_image(sample, os.path.join(path, f"{idx}.png"))
                     idx += 1
 
-    def sample_fn(_n_samples):
+    def sample_z(_n_samples, _sample_steps, **kwargs):
         _z_init = torch.randn(_n_samples, *config.z_shape, device=device)
+
+        if config.sample.algorithm == 'dpm_solver':
+            noise_schedule = NoiseScheduleVP(schedule='discrete', betas=torch.tensor(_betas, device=device).float())
+
+            def model_fn(x, t_continuous):
+                t = t_continuous * N
+                eps_pre = cfg_nnet(x, t, **kwargs)
+                return eps_pre
+
+            dpm_solver = DPM_Solver(model_fn, noise_schedule, predict_x0=True, thresholding=False)
+            _z = dpm_solver.sample(_z_init, steps=_sample_steps, eps=1. / N, T=1.)
+
+        else:
+            raise NotImplementedError
+
+        return _z
+
+    def sample_fn(_n_samples, class_num):
         if config.train.mode == 'uncond':
             kwargs = dict()
-            sample_class = torch.zeros(_n_samples, device=device)
-
         elif config.train.mode == 'cond':
-            sample_class = dataset.sample_label(_n_samples, device=device)
-            kwargs = dict(y = sample_class)
+            torch_arr = torch.ones(_n_samples // 10, device=device, dtype=int) * torch.tensor(int(class_num))
+            kwargs = dict(y=einops.repeat(torch_arr % dataset.K, 'nrow -> (nrow ncol)', ncol=10))
         else:
             raise NotImplementedError
+        _z = sample_z(_n_samples, _sample_steps=config.sample.sample_steps, **kwargs)
+        return decode_large_batch(_z)
 
-        if config.sample.algorithm == 'euler_maruyama_sde':
-            _z = sde.euler_maruyama(sde.ReverseSDE(score_model), _z_init, config.sample.sample_steps, verbose=accelerator.is_main_process, **kwargs)
-        elif config.sample.algorithm == 'euler_maruyama_ode':
-            _z = sde.euler_maruyama(sde.ODE(score_model), _z_init, config.sample.sample_steps, verbose=accelerator.is_main_process, **kwargs)
-        elif config.sample.algorithm == 'dpm_solver':
-            noise_schedule = NoiseScheduleVP(schedule='linear')
-            model_fn = model_wrapper(
-                score_model.noise_pred,
-                noise_schedule,
-                time_input_type='0',
-                model_kwargs=kwargs
-            )
-            dpm_solver = DPM_Solver(model_fn, noise_schedule)
-            _z = dpm_solver.sample(
-                _z_init,
-                steps=config.sample.sample_steps,
-                eps=1e-4,
-                adaptive_step_size=False,
-                fast_version=True,
-            )
+    f_read = open('idx_to_class.pkl', 'rb')
+    dict2 = pickle.load(f_read)
+    print(dict2)
+
+    for i in range(1000):
+        if config.sample.path == '':
+            aug_samples_path = f'{config.dpm_path}/{cluster_name}/{config.resolution}/samples_for_classifier/aug_{config.augmentation_K}_samples'
+
+            path = os.path.join(aug_samples_path, f'train/{dict2[i]}')
         else:
-            raise NotImplementedError
-        return decode_large_batch(_z), sample_class
+            path = os.path.join(config.sample.path, f'{dict2[i]}')
 
-    with tempfile.TemporaryDirectory() as temp_path:
-        path = config.sample.path or temp_path
         if accelerator.is_main_process:
             os.makedirs(path, exist_ok=True)
-        sample2dir(accelerator, path, config.sample.n_samples, config.sample.mini_batch_size, sample_fn, dataset.unpreprocess)
-        if accelerator.is_main_process:
-            os.system(f"cd {config.sample.path} && cd .. && tar -zcvf samples.tar.gz samples")
-            
-
+        sample2dir(accelerator, path, config.augmentation_K, config.sample.mini_batch_size, sample_fn, dataset.unpreprocess, class_num = i)
+    
+    if config.sample.path != '' and accelerator.is_main_process:
+        os.system(f"cd {config.sample.path} && cd .. && tar -zcf samples.tar.gz samples")
 
 from absl import flags
 from absl import app
@@ -163,7 +182,7 @@ FLAGS = flags.FLAGS
 config_flags.DEFINE_config_file(
     "config", None, "Training configuration.", lock_config=False)
 flags.mark_flags_as_required(["config"])
-flags.DEFINE_string("nnet_path", None, "The nnet to evaluate.")
+flags.DEFINE_string("nnet_path", '', "The nnet to evaluate.")
 flags.DEFINE_string("output_path", None, "The path to output log.")
 
 
@@ -199,6 +218,7 @@ def main(argv):
     config.notes = hparams
     config.nnet_path = FLAGS.nnet_path
     config.output_path = FLAGS.output_path
+    
     evaluate(config)
 
 
